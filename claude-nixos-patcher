@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Auto-patch Claude Code binaries for NixOS after upgrades
+VERSIONS_DIR="$HOME/.local/share/claude/versions"
+
+echo "Checking Claude Code binaries for NixOS compatibility..."
+
+# Check versions dir exists
+if [ ! -d "$VERSIONS_DIR" ]; then
+  echo "✓ No versions directory yet - nothing to patch"
+  exit 0
+fi
+
+# Find binaries that need patching (check outside nix-shell for speed)
+needs_patching=()
+for binary in "$VERSIONS_DIR"/*; do
+  [ -f "$binary" ] || continue
+  if file "$binary" 2>/dev/null | grep -q 'dynamically linked.*interpreter /lib64'; then
+    needs_patching+=("$binary")
+  fi
+done
+
+# Patch all at once in single nix-shell
+if [ ${#needs_patching[@]} -eq 0 ]; then
+  echo "✓ No binaries need patching. All good!"
+else
+  echo "Patching ${#needs_patching[@]} binary/binaries..."
+  nix-shell -p patchelf gcc --run "
+    for binary in ${needs_patching[@]}; do
+      echo '  Patching \$(basename \"\$binary\")...'
+      patchelf --set-interpreter \$(cat \$NIX_CC/nix-support/dynamic-linker) \"\$binary\"
+    done
+  "
+  echo "✓ Patched ${#needs_patching[@]} binary/binaries"
+fi
+
+# Test it works
+if claude --version &>/dev/null; then
+  echo "✓ Claude Code is working!"
+  claude --version
+else
+  echo "✗ Claude Code still broken - manual intervention needed"
+  exit 1
+fi
