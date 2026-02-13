@@ -26,4 +26,11 @@ cp claude-nixos-patcher ~/.local/bin/
 chmod +x ~/.local/bin/claude-nixos-patcher
 ```
 
-Run after Claude Code upgrades if you see "No such file or directory" errors.
+**When to run:**
+
+Run after Claude Code upgrades if you see this error:
+```
+Could not start dynamically linked executable: claude
+NixOS cannot run dynamically linked executables intended for generic
+linux environments out of the box.
+```
