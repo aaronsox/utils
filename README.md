@@ -16,6 +16,8 @@ Auto-patches Claude Code binaries for NixOS compatibility after upgrades.
 **What it does:**
 - Scans `~/.local/share/claude/versions/` for Claude binaries
 - Patches dynamic linker paths for NixOS using patchelf
+- Updates symlinks to point to the latest version
+- Runs comprehensive diagnostics (interpreter validation, permissions)
 - Verifies Claude Code works after patching
 
 **Installation:**

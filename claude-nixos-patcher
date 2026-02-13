@@ -3,43 +3,132 @@ set -euo pipefail
 
 # Auto-patch Claude Code binaries for NixOS after upgrades
 VERSIONS_DIR="$HOME/.local/share/claude/versions"
+BIN_DIR="$HOME/.local/bin"
 
-echo "Checking Claude Code binaries for NixOS compatibility..."
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "Claude Code NixOS Patcher"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
 
 # Check versions dir exists
 if [ ! -d "$VERSIONS_DIR" ]; then
-  echo "✓ No versions directory yet - nothing to patch"
+  echo "✓ No versions directory found at $VERSIONS_DIR"
+  echo "  Nothing to patch - Claude Code not yet installed"
   exit 0
 fi
 
-# Find binaries that need patching (check outside nix-shell for speed)
+echo "Scanning: $VERSIONS_DIR"
+echo ""
+
+# Find all versions and their patch status
+all_versions=()
 needs_patching=()
 for binary in "$VERSIONS_DIR"/*; do
   [ -f "$binary" ] || continue
-  if file "$binary" 2>/dev/null | grep -q 'dynamically linked.*interpreter /lib64'; then
+  version=$(basename "$binary")
+  all_versions+=("$version")
+  # Check if binary needs patching using nix-shell for 'file' command
+  if nix-shell -p file --run "file '$binary' 2>/dev/null | grep -q 'dynamically linked.*interpreter /lib64'"; then
     needs_patching+=("$binary")
   fi
 done
 
+echo "Found ${#all_versions[@]} version(s): ${all_versions[*]}"
+echo ""
+
 # Patch all at once in single nix-shell
 if [ ${#needs_patching[@]} -eq 0 ]; then
-  echo "✓ No binaries need patching. All good!"
+  echo "✓ All binaries already patched for NixOS"
 else
-  echo "Patching ${#needs_patching[@]} binary/binaries..."
+  echo "Patching ${#needs_patching[@]} binary/binaries for NixOS..."
   nix-shell -p patchelf gcc --run "
     for binary in ${needs_patching[@]}; do
-      echo '  Patching \$(basename \"\$binary\")...'
+      version=\$(basename \"\$binary\")
+      echo \"  └─ Patching version \$version\"
       patchelf --set-interpreter \$(cat \$NIX_CC/nix-support/dynamic-linker) \"\$binary\"
     done
   "
-  echo "✓ Patched ${#needs_patching[@]} binary/binaries"
+  echo "✓ Patching complete"
 fi
 
+echo ""
+
+# Find the latest version (highest version number)
+latest_version=$(ls -1 "$VERSIONS_DIR" | sort -V | tail -n1)
+latest_binary="$VERSIONS_DIR/$latest_version"
+
+echo "Latest version detected: $latest_version"
+echo "Binary location: $latest_binary"
+echo ""
+
+# Update symlinks to point to latest patched version
+echo "Updating symlinks:"
+echo "  $BIN_DIR/claude     → $latest_binary"
+echo "  $BIN_DIR/claude-bin → $latest_binary"
+ln -sf "$latest_binary" "$BIN_DIR/claude"
+ln -sf "$latest_binary" "$BIN_DIR/claude-bin"
+echo ""
+
+# Diagnostic checks before testing
+echo "Running diagnostics..."
+echo ""
+
+# Check file type (using nix-shell for 'file' command)
+file_info=$(nix-shell -p file --run "file '$latest_binary'")
+echo "File type: $file_info"
+
+# Check interpreter
+if echo "$file_info" | grep -q "interpreter"; then
+  current_interp=$(nix-shell -p patchelf --run "patchelf --print-interpreter '$latest_binary' 2>/dev/null" || echo "unable to read")
+  echo "Current interpreter: $current_interp"
+
+  # Check if interpreter exists
+  if [ -f "$current_interp" ]; then
+    echo "Interpreter status: ✓ exists"
+  else
+    echo "Interpreter status: ✗ NOT FOUND"
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "✗ Error: Binary needs re-patching"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "The interpreter path is invalid. Re-running patchelf..."
+    echo ""
+
+    nix-shell -p patchelf gcc --run "
+      echo 'Applying NixOS interpreter patch...'
+      patchelf --set-interpreter \$(cat \$NIX_CC/nix-support/dynamic-linker) \"$latest_binary\"
+      new_interp=\$(patchelf --print-interpreter \"$latest_binary\")
+      echo \"New interpreter: \$new_interp\"
+    "
+    echo ""
+  fi
+fi
+
+# Check permissions
+perms=$(stat -c "%a" "$latest_binary")
+echo "Permissions: $perms"
+if [ "$perms" != "755" ] && [ "$perms" != "775" ] && [ "$perms" != "777" ]; then
+  echo "  └─ Fixing permissions..."
+  chmod +x "$latest_binary"
+fi
+
+echo ""
+
 # Test it works
-if claude --version &>/dev/null; then
-  echo "✓ Claude Code is working!"
-  claude --version
+if claude_version=$("$latest_binary" --version 2>&1); then
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "✓ Success: Claude Code is operational"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "$claude_version"
 else
-  echo "✗ Claude Code still broken - manual intervention needed"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "✗ Error: Claude Code binary still failing"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "Binary: $latest_binary"
+  echo "Error output:"
+  echo "$claude_version"
+  echo ""
+  echo "Try running manually:"
+  echo "  $latest_binary --version"
   exit 1
 fi
