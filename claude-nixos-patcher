@@ -27,8 +27,24 @@ for binary in "$VERSIONS_DIR"/*; do
   [ -f "$binary" ] || continue
   version=$(basename "$binary")
   all_versions+=("$version")
-  # Check if binary needs patching using nix-shell for 'file' command
-  if nix-shell -p file --run "file '$binary' 2>/dev/null | grep -q 'dynamically linked.*interpreter /lib64'"; then
+
+  # Check if binary needs patching - look for /lib64 interpreter OR missing/invalid interpreter
+  if nix-shell -p file patchelf --run "
+    file_output=\$(file '$binary' 2>/dev/null)
+    # Check if it has /lib64 interpreter (definitely needs patching)
+    if echo \"\$file_output\" | grep -q 'interpreter /lib64'; then
+      exit 0
+    fi
+    # Check if it has an interpreter at all
+    if echo \"\$file_output\" | grep -q 'interpreter'; then
+      interp=\$(patchelf --print-interpreter '$binary' 2>/dev/null || echo '')
+      # If interpreter doesn't exist on filesystem, needs patching
+      if [ -n \"\$interp\" ] && [ ! -f \"\$interp\" ]; then
+        exit 0
+      fi
+    fi
+    exit 1
+  "; then
     needs_patching+=("$binary")
   fi
 done
@@ -41,13 +57,12 @@ if [ ${#needs_patching[@]} -eq 0 ]; then
   echo "✓ All binaries already patched for NixOS"
 else
   echo "Patching ${#needs_patching[@]} binary/binaries for NixOS..."
-  nix-shell -p patchelf gcc --run "
-    for binary in ${needs_patching[@]}; do
-      version=\$(basename \"\$binary\")
-      echo \"  └─ Patching version \$version\"
-      patchelf --set-interpreter \$(cat \$NIX_CC/nix-support/dynamic-linker) \"\$binary\"
-    done
-  "
+  # Patch each binary individually to avoid array expansion issues
+  for binary in "${needs_patching[@]}"; do
+    version=$(basename "$binary")
+    echo "  └─ Patching version $version"
+    nix-shell -p patchelf gcc --run "patchelf --set-interpreter \$(cat \$NIX_CC/nix-support/dynamic-linker) '$binary'"
+  done
   echo "✓ Patching complete"
 fi
 
@@ -96,8 +111,8 @@ if echo "$file_info" | grep -q "interpreter"; then
 
     nix-shell -p patchelf gcc --run "
       echo 'Applying NixOS interpreter patch...'
-      patchelf --set-interpreter \$(cat \$NIX_CC/nix-support/dynamic-linker) \"$latest_binary\"
-      new_interp=\$(patchelf --print-interpreter \"$latest_binary\")
+      patchelf --set-interpreter \$(cat \$NIX_CC/nix-support/dynamic-linker) '$latest_binary'
+      new_interp=\$(patchelf --print-interpreter '$latest_binary')
       echo \"New interpreter: \$new_interp\"
     "
     echo ""
